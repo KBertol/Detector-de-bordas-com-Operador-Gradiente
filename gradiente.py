@@ -14,6 +14,10 @@ def aplicar_convolucao_manual(imagem, kernel):
     imagem_com_borda = np.zeros((altura_imagem + (borda_y * 2), largura_imagem + (borda_x * 2)))
     imagem_com_borda[borda_y:-borda_y, borda_x:-borda_x] = imagem
 
+    # Convolução requer girar o kernel 180° antes da multiplicação.
+    # Sem o flip, a operação seria tecnicamente correlação cruzada.
+    kernel = np.flip(kernel, (0, 1))
+
     imagem_convolucionada = np.zeros((altura_imagem, largura_imagem))
 
     for i in range(altura_imagem):
@@ -92,7 +96,11 @@ def suprimir_nao_maximos_b1(matriz_magnitude, matriz_direcao):
                 vizinho_1 = 0
                 vizinho_2 = 0
 
-            if (magnitude_atual > vizinho_1) and (magnitude_atual > vizinho_2):
+            if (
+                magnitude_atual >= vizinho_1
+                and magnitude_atual >= vizinho_2
+                and magnitude_atual > min(vizinho_1, vizinho_2)
+            ):
                 imagem_suprimida[i, j] = magnitude_atual
             else:
                 imagem_suprimida[i, j] = 0
@@ -161,7 +169,11 @@ def suprimir_nao_maximos_b2(matriz_magnitude, gradiente_x, gradiente_y):
                     vizinho_Y = (1 - t) * H + t * I   # entre H e I
                     vizinho_X = (1 - t) * B + t * A   # entre B e A
 
-            if (magnitude_atual > vizinho_Y) and (magnitude_atual > vizinho_X):
+            if (
+                magnitude_atual >= vizinho_Y
+                and magnitude_atual >= vizinho_X
+                and magnitude_atual > min(vizinho_Y, vizinho_X)
+            ):
                 imagem_suprimida[i, j] = magnitude_atual
             else:
                 imagem_suprimida[i, j] = 0
@@ -169,29 +181,31 @@ def suprimir_nao_maximos_b2(matriz_magnitude, gradiente_x, gradiente_y):
     return imagem_suprimida
 
 def calcular_limiar_adaptativo(bordas_afinadas, fator=1.5):
-    valores_nao_nulos = bordas_afinadas[bordas_afinadas > 0]
-
-    if valores_nao_nulos.size == 0:
+    # 1. Filtra apenas valores significativos (ignora ruído de fundo muito baixo)
+    # Isso evita que o ruído 'puxe' a mediana para baixo
+    mask = bordas_afinadas > (0.05 * np.max(bordas_afinadas))
+    pixels_significativos = bordas_afinadas[mask]
+    
+    if len(pixels_significativos) == 0:
         return 0
+        
+    # 2. Mediana apenas dos pixels que são bordas reais
+    mediana = np.median(pixels_significativos)
+    limiar_calculado = mediana * fator
+    
+    # 3. Teto de segurança para evitar cortes extremos
+    maximo = np.max(bordas_afinadas)
+    limiar_final = min(limiar_calculado, 0.6 * maximo) # Ajustei para 0.6 para ser mais rigoroso
+    
+    return limiar_final
 
-    mediana = np.median(valores_nao_nulos)
-    limiar = fator * mediana
-
-    # Evita que o limiar "exploda" além do maior valor observado,
-    # o que pode acontecer em imagens com distribuição de magnitude
-    # muito concentrada/enviesada (ex.: imagens binárias de alto
-    # contraste, como tabuleiros de xadrez), zerando todas as bordas.
-    maximo = valores_nao_nulos.max()
-    limiar = min(limiar, maximo * 0.8)
-
-    return limiar
-
-def comparar_com_canny_e_ssim(imagem_suavizada, sua_imagem_binarizada, nome_imagem, operador, sigma=1.0):
+def comparar_com_canny_e_ssim(imagem_suavizada, sua_imagem_binarizada, nome_imagem, operador, sigma=1.0, metodo=""):
     bordas_canny_bool = feature.canny(imagem_suavizada, sigma=sigma)
     bordas_canny = np.where(bordas_canny_bool, 255, 0).astype(np.uint8)
 
     score_ssim, _ = ssim(sua_imagem_binarizada, bordas_canny, full=True)
-    print(f"[{nome_imagem} | {operador.upper()} | Canny sigma={sigma}] Índice SSIM: {score_ssim:.4f}")
+    prefixo = f"[{metodo} | " if metodo else "["
+    print(f"{prefixo}{nome_imagem} | {operador.upper()} | Canny sigma={sigma}] Índice SSIM: {score_ssim:.4f}")
 
     return bordas_canny
 
@@ -234,10 +248,10 @@ def processar_lote_de_imagens(lista_imagens, operador_escolhido="prewitt", sigma
         # Comparação com Canny para diferentes valores de sigma
         for sigma in sigmas_canny:
             bordas_canny = comparar_com_canny_e_ssim(
-                imagem_suavizada, imagem_binarizada_b1, arquivo, operador_escolhido, sigma=sigma
+                imagem_suavizada, imagem_binarizada_b1, arquivo, operador_escolhido, sigma=sigma, metodo="b1"
             )
             comparar_com_canny_e_ssim(
-                imagem_suavizada, imagem_binarizada_b2, arquivo, operador_escolhido, sigma=sigma
+                imagem_suavizada, imagem_binarizada_b2, arquivo, operador_escolhido, sigma=sigma, metodo="b2"
             )
 
             sigma_str = str(sigma).replace(".", "_")
